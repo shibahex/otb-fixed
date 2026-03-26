@@ -181,13 +181,15 @@ def add_extra_info(item):
         item_instance_id = item.get("ItemInstanceId")
 
         # Add instance Id if its from the trade inventory API
+        item_instances = item.get("instances")
         if item_instance_id:
             item["collectibleItemInstanceId"] = item_instance_id
         else:
-            item_instances = item.get("instances")
             if item_instances:
                 item_instance_id = item_instances[0]["collectibleItemInstanceId"]
                 item["collectibleItemInstanceId"] = item_instance_id
+        if item_instances:
+            item["isOnHold"] = item_instances[0]["isOnHold"]
 
         item["userAssetId"] = item_instance_id
         item["itemType"] = item["itemTarget"]["itemType"]
@@ -249,7 +251,6 @@ def get_inventory(user_id):
                 log("Inventory request failed. Trying again.", mycolors.WARNING)
                 time.sleep(1)
                 continue
-
             if response.status_code == 429:
                 log("Loading Inventory throttled retrying.", mycolors.WARNING)
                 time.sleep(10)
@@ -261,6 +262,8 @@ def get_inventory(user_id):
             if "errors" in data:
                 for err in data["errors"]:
                     logging.warning("Failed to load inventory: %s" % (err["message"]))
+                raise FailedToLoadInventoryException
+            if response.status_code == 500:
                 raise FailedToLoadInventoryException
 
             break
@@ -287,6 +290,8 @@ def get_inventory(user_id):
         item
         for item in inventory
         if item["value"] <= int(settings["Trading"]["maximum_item_value"])
+        # Assume item is on hold if it errored to get isOnHold
+        and not item.get("isOnHold", True)
     ]
 
     return inventory
