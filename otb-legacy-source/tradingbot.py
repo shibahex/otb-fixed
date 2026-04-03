@@ -16,7 +16,7 @@ from settings import settings
 #################################################
 RELEASE = True
 
-VERSION = 57
+VERSION = 58
 #################################################
 
 if RELEASE:
