@@ -268,7 +268,7 @@ def find_people():
                     f"https://apis.roblox.com/marketplace-sales/v1/item/{item_id}/resellers?cursor=&limit=100"
                 )
                 if response.status_code == 429:
-                    print("ratelimited trying to get resellers")
+                    log("ratelimited trying to get resellers")
                 else:
                     decoded_json = json.loads(response.text)
 
@@ -494,14 +494,8 @@ if settings["Debugging"]["memory_debugging"] == "true":
         import valuemanager
 
         while True:
-            print(
-                "ID queue bytes: %i, Type values: %i, Values: %i, Trade queue: %i"
-                % (
-                    sys.getsizeof(queueIds),
-                    sys.getsizeof(typevalues.typeValues),
-                    sys.getsizeof(valuemanager.values),
-                    sys.getsizeof(trading.tradeSendQueue),
-                )
+            log(
+                f"ID queue bytes: {sys.getsizeof(queueIds)} Type values: {sys.getsizeof(typevalues.typeValues)} Values: {sys.getsizeof(valuemanager.values)}  Trade queue: {sys.getsizeof(trading.tradeSendQueue)}"
             )
             time.sleep(5)
 
