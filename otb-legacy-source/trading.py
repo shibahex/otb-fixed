@@ -600,12 +600,11 @@ def send_trade(
                             cooldowns.items_on_hold_event.clear()
                             break
                     except FailedToLoadInventoryException:
-                        logging.exception("Caught exception while getting my_inventory")
-
                         log(
                             "Failed to load inventory while checking on-hold.",
                             mycolors.WARNING,
                         )
+                        logging.exception("Caught exception while getting my_inventory")
 
                     log(
                         "All items on hold, waiting 30 minutes, then refreshing...",
@@ -1174,14 +1173,15 @@ def search_for_trades(user_id, guarantee_trade=False):
     except FailedToLoadInventoryException:
         log("Failed to load own inventory.", mycolors.FAIL)
         logging.exception("Caught exception while getting my_inventory")
-
         return
     try:
         their_inventory = get_inventory(user_id)
     except FailedToLoadInventoryException:
-        logging.exception("Caught exception while getting my_inventory")
-
-        logging.warning("Skipping user...")
+        log(
+            f"Skipping getting inventory for user {user_id}",
+            mycolors.WARNING,
+        )
+        logging.exception("Caught exception while getting their inventory")
         return
 
     def highest_value_affordable(inventory, upper_limit_multiplier):

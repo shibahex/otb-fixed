@@ -314,10 +314,13 @@ def find_people():
                 if response.status_code != 200:
                     # Something went wrong with this item. Skip it.
                     log(
-                        f"Roblox had internal server error while fetching item owners. item_id: {item_id} item: {item} status_code {response.status_code}",
-                        mycolors.FAIL,
+                        f"Skipping getting owners for {item_id}",
+                        mycolors.WARNING,
                     )
-                    break
+                    logging.warning(
+                        f"Roblox had internal server error while fetching item owners. item: {item} status_code {response.status_code}"
+                    )
+                    continue
                 item_owners = [
                     item["owner"]["id"]
                     for item in json.loads(response.text)["data"]
