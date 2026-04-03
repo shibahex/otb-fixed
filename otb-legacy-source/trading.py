@@ -222,55 +222,57 @@ class AllSelfItemsHoldException(Exception):
 @cached(cache=TTLCache(maxsize=4096, ttl=300))
 def get_inventory(user_id):
     user_id = int(user_id)
-
     inventory_raw = []
 
-    # NOTE: I don't like the original approach because you get ratelimited every user you scan -Flaried
-
-    # Good job tardblox, now I get to send EVEN MORE http requests to your server :DDDDD
-    # Wasting resources is fun! 8x more to be exact :-)
-    # accessory_asset_type_ids = [8, 41, 42, 43, 44, 45, 46, 47]
-    # other_asset_type_ids = [19, 18]
-    # asset_type_ids = (accessory_asset_type_ids + other_asset_type_ids
-    #                   if settings["Trading"]["only_trade_accessories"] != "true"
-    #                   else accessory_asset_type_ids[:])
-
+    MAX_RETRIES = 5
     cursor = ""
-    while cursor is not None:  # Continue until we've loaded all of this asset type
-        data = None
+    while cursor is not None:
+        url = (
+            f"https://trades.roblox.com/v2/users/{user_id}"
+            f"/tradableItems?sortBy=CreationTime&sortOrder=2&limit=50&cursor={cursor}"
+        )
 
-        for i in range(5):  # Up to 5 attempts
-            # NOTE: limit is 50 because 100 causes internal server error for big inventories
-            url = f"https://trades.roblox.com/v2/users/{user_id}/tradableItems?sortBy=CreationTime&sortOrder=2&limit=50&cursor={cursor}"
-
+        for attempt in range(MAX_RETRIES):
             response = session.get(url)
-
-            data = json.loads(response.text)
-
-            if response.status_code == 503:
-                log("Inventory request failed. Trying again.", mycolors.WARNING)
+            if response.status_code == 429:
+                log(
+                    f"Loading inventory throttled. Attempt {attempt + 1}/{
+                        MAX_RETRIES
+                    }.",
+                    mycolors.WARNING,
+                )
+                time.sleep(10)
+                continue
+            if response.status_code != 200:
+                log(
+                    f"Inventory request failed with status {
+                        response.status_code
+                    }. Attempt {attempt + 1}/{MAX_RETRIES}.",
+                    mycolors.WARNING,
+                )
                 time.sleep(1)
                 continue
-            if response.status_code == 429:
-                log("Loading Inventory throttled retrying.", mycolors.WARNING)
-                time.sleep(10)
-                if i >= 5:
-                    log("Failed to load inventory. Exiting.", mycolors.FAIL)
-                    sys.exit(0)
+            try:
+                data = json.loads(response.text)
+            except json.JSONDecodeError:
+                logging.warning(
+                    "Failed to parse inventory JSON on attempt %d", attempt + 1
+                )
                 continue
-
             if "errors" in data:
                 for err in data["errors"]:
-                    logging.warning("Failed to load inventory: %s" % (err["message"]))
-                raise FailedToLoadInventoryException
-            if response.status_code == 500:
+                    logging.warning("Failed to load inventory: %s", err["message"])
+
                 raise FailedToLoadInventoryException
 
-            break
+            if response.status_code == 200:
+                break
+        else:
+            log("Failed to load inventory after all retries.", mycolors.FAIL)
+            raise FailedToLoadInventoryException
 
         cursor = data["nextPageCursor"]
         inventory_raw += data["items"]
-
     inventory = []
     for item in inventory_raw:
         new_item = add_extra_info(item)
@@ -284,16 +286,13 @@ def get_inventory(user_id):
             if new_item["AveragePrice"] > new_item["value"]:
                 new_item["value"] = new_item["AveragePrice"]
         inventory.append(new_item)
-
     inventory = [item for item in inventory if item["value"] > 0]
     inventory = [
         item
         for item in inventory
         if item["value"] <= int(settings["Trading"]["maximum_item_value"])
-        # Assume item is on hold if it errored to get isOnHold
         and not item.get("isOnHold", True)
     ]
-
     return inventory
 
 
@@ -303,7 +302,17 @@ def sale_manager():
 
     while True:
         try:
-            my_inventory = get_inventory(session.cookies["user_id"])
+            try:
+                my_inventory = get_inventory(session.cookies["user_id"])
+            except FailedToLoadInventoryException:
+                log("Failed to load self inventory. Retrying...", mycolors.FAIL)
+                logging.exception("Caught exception while getting my_inventory")
+
+                time.sleep(
+                    float(settings["Trading"]["interval_between_placing_items_on_sale"])
+                )
+                continue
+
             filtered_inventory = []
             for item in my_inventory:
                 if (
@@ -541,7 +550,9 @@ def send_trade(
                 ):
                     cooldowns.items_on_hold_event.set()
                     log(
-                        f"{session.cookies['username']} has hit the daily 100 trade limit waiting 3 hours, then retrying",
+                        f"{
+                            session.cookies['username']
+                        } has hit the daily 100 trade limit waiting 3 hours, then retrying",
                         mycolors.WARNING,
                         post_to_webhook=True,
                     )
@@ -578,11 +589,20 @@ def send_trade(
                 cooldowns.items_on_hold_event.set()
 
                 while True:
-                    remove_trades_with_invalid_items_from_queue()
-                    if len(get_inventory(session.cookies["user_id"])) > 0:
-                        # stop the on_hold event
-                        cooldowns.items_on_hold_event.clear()
-                        break
+                    try:
+                        remove_trades_with_invalid_items_from_queue()
+                        if len(get_inventory(session.cookies["user_id"])) > 0:
+                            # stop the on_hold event
+                            cooldowns.items_on_hold_event.clear()
+                            break
+                    except FailedToLoadInventoryException:
+                        logging.exception("Caught exception while getting my_inventory")
+
+                        log(
+                            "Failed to load inventory while checking on-hold.",
+                            mycolors.WARNING,
+                        )
+
                     log(
                         "All items on hold, waiting 30 minutes, then refreshing...",
                         post_to_webhook=True,
@@ -1014,7 +1034,8 @@ def update_score_threshold():
             except ZeroDivisionError:
                 return
 
-        clamp = lambda x: max(x, 0.001)
+        def clamp(x):
+            return max(x, 0.001)
 
         try:
             percent_diff = abs(
@@ -1144,11 +1165,18 @@ def search_for_trades(user_id, guarantee_trade=False):
             pass
         return
 
-    my_inventory = get_inventory(session.cookies["user_id"])
+    try:
+        my_inventory = get_inventory(session.cookies["user_id"])
+    except FailedToLoadInventoryException:
+        log("Failed to load own inventory.", mycolors.FAIL)
+        logging.exception("Caught exception while getting my_inventory")
 
+        return
     try:
         their_inventory = get_inventory(user_id)
     except FailedToLoadInventoryException:
+        logging.exception("Caught exception while getting my_inventory")
+
         logging.warning("Skipping user...")
         return
 
@@ -1266,9 +1294,9 @@ def search_for_trades(user_id, guarantee_trade=False):
                 yield x, y
 
     my_combos = combos(len(my_inventory), int(settings["Trading"]["maximum_xv1"]))
-    their_combos_wrapper = lambda: combos(
-        len(their_inventory), int(settings["Trading"]["maximum_1vx"])
-    )
+
+    def their_combos_wrapper():
+        return combos(len(their_inventory), int(settings["Trading"]["maximum_1vx"]))
 
     combinations = prod(my_combos, their_combos_wrapper)
 
