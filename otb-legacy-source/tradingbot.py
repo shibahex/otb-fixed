@@ -263,9 +263,10 @@ def find_people():
                 f.write(str(cursor))
 
             for item in decoded_response["data"]:
-                item_id = item["collectibleItemId"]
+                collectible_item_id = item["collectibleItemId"]
+                item_id = item["id"]
                 response = session.get(
-                    f"https://apis.roblox.com/marketplace-sales/v1/item/{item_id}/resellers?cursor=&limit=100"
+                    f"https://apis.roblox.com/marketplace-sales/v1/item/{collectible_item_id}/resellers?cursor=&limit=100"
                 )
                 if response.status_code == 429:
                     log("ratelimited trying to get resellers")
@@ -313,7 +314,7 @@ def find_people():
                 if response.status_code != 200:
                     # Something went wrong with this item. Skip it.
                     logging.warning(
-                        f"Roblox had internal server error while fetching item owners. item: {item_id} status_code {response.status_code}"
+                        f"Roblox had internal server error while fetching item owners. item_id: {item_id} item: {item} status_code {response.status_code}"
                     )
                     break
                 item_owners = [
