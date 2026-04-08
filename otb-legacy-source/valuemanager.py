@@ -148,6 +148,7 @@ def generate_value(item):
         resale_id = item_id
 
     retry_delay = 15
+    tried_v2_fallback = False
     while True:
         # NOTE: Assume the URL is the v1 API (all older items)
         if url is None:
@@ -166,7 +167,9 @@ def generate_value(item):
             retry_delay = min(retry_delay * 2, 120)
             continue
         # NOTE: Handle new items that use the v2 API
-        elif response.status_code == 400 or response.status_code == 404:
+        elif response.status_code in (400, 404) and not tried_v2_fallback:
+            tried_v2_fallback = True
+
             collectable_id = get_collectible_id_from_asset(item_id)
             if collectable_id:
                 url = f"https://apis.roblox.com/marketplace-sales/v1/item/{collectable_id}/resale-data"
