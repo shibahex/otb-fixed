@@ -231,7 +231,9 @@ def get_inventory(user_id):
 
         for attempt in range(MAX_RETRIES):
             response = session.get(url)
-            if response.status_code == 429:
+            if response.status_code == 200:
+                break
+            elif response.status_code == 429:
                 log(
                     f"Loading inventory throttled. Attempt {attempt + 1}/{MAX_RETRIES}.",
                     mycolors.WARNING,
@@ -242,7 +244,6 @@ def get_inventory(user_id):
             # Check for any errors in response
             try:
                 data = json.loads(response.text)
-
                 if "errors" in data:
                     for err in data["errors"]:
                         logging.warning("Failed to load inventory: %s", err["message"])
@@ -251,7 +252,7 @@ def get_inventory(user_id):
                 logging.warning(
                     "Failed to parse inventory JSON on attempt %d", attempt + 1
                 )
-
+                continue
             # Check for response
             if response.status_code != 200:
                 log(
@@ -260,15 +261,17 @@ def get_inventory(user_id):
                 )
                 time.sleep(1)
                 continue
-
-            if response.status_code == 200:
-                break
         else:
             log("Failed to load inventory after all retries.", mycolors.FAIL)
             raise FailedToLoadInventoryException
 
-        cursor = data["nextPageCursor"]
-        inventory_raw += data["items"]
+        try:
+            cursor = data["nextPageCursor"]
+            inventory_raw += data["items"]
+        except Exception:
+            log("Failed to items from inventory response", mycolors.FAIL)
+            raise FailedToLoadInventoryException
+
     inventory = []
     for item in inventory_raw:
         new_item = add_extra_info(item)
@@ -536,7 +539,7 @@ def send_trade(
             errors = data["errors"]
             error_output_text = " ".join([error["message"] for error in errors])
         else:
-            error_output_text = data
+            error_output_text = json.dumps(data)
 
         if response.status_code == 429:
             if "errors" in response.json():
