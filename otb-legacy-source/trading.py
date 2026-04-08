@@ -177,7 +177,7 @@ def add_extra_info(item):
         collectable_id = item.get("collectibleItemId")
         item["collectibleItemId"] = collectable_id
 
-        item_instance_id = item.get("ItemInstanceId")
+        item_instance_id = item.get("itemInstanceId")
 
         # Add instance Id if its from the trade inventory API
         item_instances = item.get("instances")
