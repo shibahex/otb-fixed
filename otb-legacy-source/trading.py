@@ -709,7 +709,7 @@ def listen_for_inbound_trades():
                     their_offer = copy.deepcopy(trade_data["participantAOffer"])
                 else:
                     log(
-                        f"couldn't find my user_id in trade information for inbound trade. check logs for details...",
+                        "couldn't find my user_id in trade information for inbound trade. check logs for details...",
                         mycolors.WARNING,
                     )
                     logging.warning(f"no self_user id in {trade_data}")
