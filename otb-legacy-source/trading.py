@@ -680,6 +680,7 @@ def listen_for_inbound_trades():
             good_trades = []
 
             max_handle_value = int(settings["Trading"]["ignore_inbound_above_value"])
+            session_user_id = str(session.cookies.get("user_id"))
 
             for tradeInfo in inbound:
                 trade_data = pull_trade(tradeInfo["id"])
@@ -693,8 +694,26 @@ def listen_for_inbound_trades():
                     )
                     continue
 
-                my_offer = copy.deepcopy(trade_data["participantAOffer"])
-                their_offer = copy.deepcopy(trade_data["participantBOffer"])
+                participant_a_user_id = str(
+                    trade_data["participantAOffer"]["user"]["id"]
+                )
+                participant_b_user_id = str(
+                    trade_data["participantBOffer"]["user"]["id"]
+                )
+
+                if participant_a_user_id == session_user_id:
+                    my_offer = copy.deepcopy(trade_data["participantAOffer"])
+                    their_offer = copy.deepcopy(trade_data["participantBOffer"])
+                elif participant_b_user_id == session_user_id:
+                    my_offer = copy.deepcopy(trade_data["participantBOffer"])
+                    their_offer = copy.deepcopy(trade_data["participantAOffer"])
+                else:
+                    log(
+                        f"couldn't find my user_id in trade information for inbound trade. check logs for details...",
+                        mycolors.WARNING,
+                    )
+                    logging.warning(f"no self_user id in {trade_data}")
+                    continue
 
                 my_items = [
                     info
