@@ -72,9 +72,8 @@ class AuthHandler:
                 return request.json()["verificationToken"]
             except Exception:
                 log(
-                    "error returning verification token",
-                    request.text,
-                    request.status_code,
+                    f"error returning verification token {request.text} {request.status_code}",
+                    mycolors.FAIL,
                 )
                 continue
 

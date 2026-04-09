@@ -16,7 +16,7 @@ from settings import settings
 #################################################
 RELEASE = True
 
-VERSION = 57
+VERSION = 58
 #################################################
 
 if RELEASE:
@@ -263,12 +263,13 @@ def find_people():
                 f.write(str(cursor))
 
             for item in decoded_response["data"]:
-                item_id = item["collectibleItemId"]
+                collectible_item_id = item["collectibleItemId"]
+                item_id = item["id"]
                 response = session.get(
-                    f"https://apis.roblox.com/marketplace-sales/v1/item/{item_id}/resellers?cursor=&limit=100"
+                    f"https://apis.roblox.com/marketplace-sales/v1/item/{collectible_item_id}/resellers?cursor=&limit=100"
                 )
                 if response.status_code == 429:
-                    print("ratelimited trying to get resellers")
+                    log("ratelimited trying to get resellers")
                 else:
                     decoded_json = json.loads(response.text)
 
@@ -312,10 +313,14 @@ def find_people():
                     break
                 if response.status_code != 200:
                     # Something went wrong with this item. Skip it.
-                    logging.warning(
-                        f"Roblox had internal server error while fetching item owners. item: {item_id} status_code {response.status_code}"
+                    log(
+                        f"Skipping getting owners for {item_id}",
+                        mycolors.WARNING,
                     )
-                    break
+                    logging.warning(
+                        f"Roblox had internal server error while fetching item owners. item: {item} status_code {response.status_code}"
+                    )
+                    continue
                 item_owners = [
                     item["owner"]["id"]
                     for item in json.loads(response.text)["data"]
@@ -494,14 +499,8 @@ if settings["Debugging"]["memory_debugging"] == "true":
         import valuemanager
 
         while True:
-            print(
-                "ID queue bytes: %i, Type values: %i, Values: %i, Trade queue: %i"
-                % (
-                    sys.getsizeof(queueIds),
-                    sys.getsizeof(typevalues.typeValues),
-                    sys.getsizeof(valuemanager.values),
-                    sys.getsizeof(trading.tradeSendQueue),
-                )
+            log(
+                f"ID queue bytes: {sys.getsizeof(queueIds)} Type values: {sys.getsizeof(typevalues.typeValues)} Values: {sys.getsizeof(valuemanager.values)}  Trade queue: {sys.getsizeof(trading.tradeSendQueue)}"
             )
             time.sleep(5)
 

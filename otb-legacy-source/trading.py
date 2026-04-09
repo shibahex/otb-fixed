@@ -1,5 +1,4 @@
 import copy
-import sys
 import itertools
 import json
 import logging
@@ -137,49 +136,84 @@ def get_xsrf():
 
 
 def add_extra_info(item):
-    # New method for outbound trades
-    if "Name" not in item:
-        item_name_encoded = item["name"].encode("utf-8")
-        item["Name"] = item_name_encoded  # For compatibility
-        item["name"] = item_name_encoded
-        item["itemId"] = int(item["assetId"])
+    # Statement for item info of v1 APIs (Inventory API)
+    try:
+        if "buildersClubMembershipType" in item:
+            item_name_encoded = item["name"].encode("utf-8")
+            item["Name"] = item_name_encoded  # For compatibility
+            item["name"] = item_name_encoded
+            item["itemId"] = int(item["assetId"])
 
-        item["ImageLink"] = (
-            "https://www.roblox.com/asset-thumbnail/image?assetId=%i&height=110&width=110"
-            % (item["assetId"])
-        )
-        item["ItemLink"] = "https://www.roblox.com/catalog/%i/--" % item["assetId"]
-        item["SerialNumber"] = item["serialNumber"]
-        item["SerialNumberTotal"] = item[
-            "assetStock"
-        ]  # I think this is correct but not entirely sure
-        item["OriginalPrice"] = item["originalPrice"]
-        item["userAssetID"] = item["assetId"]
-        item["UserAssetID"] = item["assetId"]
+            item["ImageLink"] = (
+                "https://www.roblox.com/asset-thumbnail/image?assetId=%i&height=110&width=110"
+                % (item["assetId"])
+            )
+            item["ItemLink"] = "https://www.roblox.com/catalog/%i/--" % item["assetId"]
+            item["SerialNumber"] = item["serialNumber"]
+            item["SerialNumberTotal"] = item[
+                "assetStock"
+            ]  # I think this is correct but not entirely sure
+            item["OriginalPrice"] = item["originalPrice"]
+            item["userAssetID"] = item["assetId"]
+            item["UserAssetID"] = item["assetId"]
 
-        membership_type = (
-            item["buildersClubMembershipType"]
-            if "buildersClubMembershipType" in item
-            else item["membershipType"]
-        )
-        item["buildersClubMembershipType"] = membership_type
-        item["MembershipLevel"] = membership_type
-        item["AveragePrice"] = int(item["recentAveragePrice"])
-    else:
-        # Old method for inbound trades
-        item["name"] = item["Name"]
+            membership_type = (
+                item["buildersClubMembershipType"]
+                if "buildersClubMembershipType" in item
+                else item["membershipType"]
+            )
+            item["buildersClubMembershipType"] = membership_type
+            item["MembershipLevel"] = membership_type
+            item["AveragePrice"] = int(item["recentAveragePrice"])
 
-        item["itemId"] = int(re.match(r".*/(\d+)/.*", item["ItemLink"]).group(1))
+        # Statement for the v2 APIs
+        else:
+            item_name_encoded = item["itemName"].encode("utf-8")
+            item["name"] = item_name_encoded
+            item["Name"] = item_name_encoded
+            item["itemId"] = int(item["itemTarget"]["targetId"])
+            item["AveragePrice"] = int(item["recentAveragePrice"])
 
-        item["AveragePrice"] = int(item["AveragePrice"])
+            # This is a replacement to item_id for bundles
+            collectable_id = item.get("collectibleItemId")
+            item["collectibleItemId"] = collectable_id
 
-    item_data = valuemanager.get_value(item["itemId"])
+            item_instance_id = item.get("itemInstanceId")
+
+            # Add instance Id if its from the trade inventory API
+            item_instances = item.get("instances")
+            if item_instance_id:
+                item["collectibleItemInstanceId"] = item_instance_id
+            else:
+                if item_instances:
+                    item_instance_id = item_instances[0]["collectibleItemInstanceId"]
+                    item["collectibleItemInstanceId"] = item_instance_id
+            if item_instances:
+                item["isOnHold"] = item_instances[0]["isOnHold"]
+
+            item["userAssetId"] = item_instance_id
+            item["itemType"] = item["itemTarget"]["itemType"]
+    except KeyError as e:
+        log(f"malformed response - missing expected field: {e}", mycolors.FAIL)
+        log(f"problematic item: {item}", mycolors.FAIL)
+        raise
+    except (ValueError, TypeError) as e:
+        log(f"malformed response - type conversion error: {e}")
+        log(f"problematic item: {item}", mycolors.FAIL)
+        raise
+    except Exception as e:
+        log(f"unexpected error processing response: {e}", mycolors.FAIL)
+        log(f"problematic item: {item}", mycolors.FAIL)
+        raise
+
+    item_data = valuemanager.get_value(item)
 
     if item_data is None:
         return None
 
     item["value"] = item_data["value"]
     item["OriginalVolume"] = item_data["volume"]
+
     try:
         item["volume"] = calculate_volume(item["value"], item_data["volume"])
     except ZeroDivisionError:
@@ -200,62 +234,65 @@ class AllSelfItemsHoldException(Exception):
 @cached(cache=TTLCache(maxsize=4096, ttl=300))
 def get_inventory(user_id):
     user_id = int(user_id)
-
     inventory_raw = []
 
-    # NOTE: I don't like the original approach because you get ratelimited every user you scan -Flaried
-
-    # Good job tardblox, now I get to send EVEN MORE http requests to your server :DDDDD
-    # Wasting resources is fun! 8x more to be exact :-)
-    # accessory_asset_type_ids = [8, 41, 42, 43, 44, 45, 46, 47]
-    # other_asset_type_ids = [19, 18]
-    # asset_type_ids = (accessory_asset_type_ids + other_asset_type_ids
-    #                   if settings["Trading"]["only_trade_accessories"] != "true"
-    #                   else accessory_asset_type_ids[:])
-
+    MAX_RETRIES = 5
     cursor = ""
-    while cursor is not None:  # Continue until we've loaded all of this asset type
-        data = None
+    while cursor is not None:
+        url = f"https://trades.roblox.com/v2/users/{user_id}/tradableItems?sortBy=CreationTime&sortOrder=2&limit=50&cursor={cursor}"
 
-        for i in range(5):  # Up to 5 attempts
-            url = (
-                "https://inventory.roblox.com/v1/users/%(userId)i/assets/collectibles?"
-                "cursor=%(cursor)s&sortOrder=Desc&limit=100"
-                % {  # &assetType=%(assetTypeId)i" % {
-                    "userId": int(user_id),
-                    "cursor": cursor,
-                }
-            )  # , "assetTypeId": assetTypeId}
+        for attempt in range(MAX_RETRIES):
             response = session.get(url)
+            if response.status_code == 200:
+                data = json.loads(response.text)
+                break
+            elif response.status_code == 429:
+                log(
+                    f"Loading inventory throttled. Attempt {attempt + 1}/{MAX_RETRIES}.",
+                    mycolors.WARNING,
+                )
+                time.sleep(10)
+                continue
 
-            data = json.loads(response.text)
-
-            if response.status_code == 503:
-                log("Inventory request failed. Trying again.", mycolors.WARNING)
+            # Check for any errors in response
+            try:
+                data = json.loads(response.text)
+                if "errors" in data:
+                    for err in data["errors"]:
+                        logging.warning("Failed to load inventory: %s", err["message"])
+                    raise FailedToLoadInventoryException
+            except json.JSONDecodeError:
+                logging.warning(
+                    "Failed to parse inventory JSON on attempt %d", attempt + 1
+                )
+                continue
+            # Check for response
+            if response.status_code != 200:
+                log(
+                    f"Inventory request failed with status {response.status_code}. Attempt {attempt + 1}/{MAX_RETRIES}.",
+                    mycolors.WARNING,
+                )
                 time.sleep(1)
                 continue
+        else:
+            log("Failed to load inventory after all retries.", mycolors.FAIL)
+            raise FailedToLoadInventoryException
 
-            if response.status_code == 429:
-                log("Loading Inventory throttled retrying.", mycolors.WARNING)
-                time.sleep(10)
-                if i >= 5:
-                    log("Failed to load inventory. Exiting.", mycolors.FAIL)
-                    sys.exit(0)
-                continue
-
-            if "errors" in data:
-                for err in data["errors"]:
-                    logging.warning("Failed to load inventory: %s" % (err["message"]))
-                raise FailedToLoadInventoryException
-
-            break
-
-        cursor = data["nextPageCursor"]
-        inventory_raw += data["data"]
+        try:
+            cursor = data["nextPageCursor"]
+            inventory_raw += data["items"]
+        except Exception:
+            log("Failed to items from inventory response", mycolors.FAIL)
+            raise FailedToLoadInventoryException
 
     inventory = []
     for item in inventory_raw:
-        new_item = add_extra_info(item)
+        try:
+            new_item = add_extra_info(item)
+        except Exception as e:
+            log(f"skipping item from fetching inventory: {e}", mycolors.FAIL)
+            logging.exception(e)
+            continue
         if new_item is None:
             continue
         # Only do this for our inventory
@@ -266,7 +303,6 @@ def get_inventory(user_id):
             if new_item["AveragePrice"] > new_item["value"]:
                 new_item["value"] = new_item["AveragePrice"]
         inventory.append(new_item)
-
     inventory = [item for item in inventory if item["value"] > 0]
     inventory = [
         item
@@ -274,7 +310,6 @@ def get_inventory(user_id):
         if item["value"] <= int(settings["Trading"]["maximum_item_value"])
         and not item["isOnHold"]
     ]
-
     return inventory
 
 
@@ -284,7 +319,17 @@ def sale_manager():
 
     while True:
         try:
-            my_inventory = get_inventory(session.cookies["user_id"])
+            try:
+                my_inventory = get_inventory(session.cookies["user_id"])
+            except FailedToLoadInventoryException:
+                log("Failed to load self inventory. Retrying...", mycolors.FAIL)
+                logging.exception("Caught exception while getting my_inventory")
+
+                time.sleep(
+                    float(settings["Trading"]["interval_between_placing_items_on_sale"])
+                )
+                continue
+
             filtered_inventory = []
             for item in my_inventory:
                 if (
@@ -427,7 +472,9 @@ def trade_side_to_str(side):
 def create_offer(user_id, items, robux):
     return {
         "userId": user_id,
-        "userAssetIds": [item["userAssetId"] for item in items],
+        "collectibleItemInstanceIds": [
+            item["collectibleItemInstanceId"] for item in items
+        ],
         "robux": robux,
     }
 
@@ -473,10 +520,10 @@ def send_trade(
         post_to_webhook=(not is_repeat),
     )
 
-    offers = [
-        create_offer(session.cookies["user_id"], trade[1], 0),
-        create_offer(user_id, trade[2], their_robux),
-    ]
+    offers = {
+        "senderOffer": create_offer(session.cookies["user_id"], trade[1], 0),
+        "recipientOffer": create_offer(user_id, trade[2], their_robux),
+    }
 
     if not skip_clock:
         while clock > 0:
@@ -486,9 +533,9 @@ def send_trade(
 
     if settings["Debugging"]["easy_debug"] != "true" and not testing:
         response = session.post(
-            "https://trades.roblox.com/v1/trades/send",
+            "https://trades.roblox.com/v2/trades/send",
             headers={"X-CSRF-TOKEN": get_xsrf()},
-            json={"offers": offers},
+            json=offers,
         )
 
         data = json.loads(response.text)
@@ -506,8 +553,11 @@ def send_trade(
         #     bl.add_block(user_id)
         #     log("Trade with %i: \"%s\", moving to next partner..." % (user_id, response["msg"]), mycolors.WARNING)
 
-        errors = data["errors"]
-        error_output_text = " ".join([error["message"] for error in errors])
+        if data.get("errors"):
+            errors = data["errors"]
+            error_output_text = " ".join([error["message"] for error in errors])
+        else:
+            error_output_text = json.dumps(data)
 
         if response.status_code == 429:
             if "errors" in response.json():
@@ -537,7 +587,10 @@ def send_trade(
                 user_id, trade, skip_clock, trade_id, their_robux, is_repeat=True
             )
         else:
-            log("Failed to send trade. %s" % error_output_text, mycolors.FAIL)
+            log(
+                f"Failed to send trade. {error_output_text} payload: {offers}",
+                mycolors.FAIL,
+            )
             if "Challenge is required to authorize the request" in error_output_text:
                 ok = Authenticator.validate_2fa(response, session)
                 log(f"response from 2fa: {ok}", no_print=True)
@@ -551,11 +604,19 @@ def send_trade(
                 cooldowns.items_on_hold_event.set()
 
                 while True:
-                    remove_trades_with_invalid_items_from_queue()
-                    if len(get_inventory(session.cookies["user_id"])) > 0:
-                        # stop the on_hold event
-                        cooldowns.items_on_hold_event.clear()
-                        break
+                    try:
+                        remove_trades_with_invalid_items_from_queue()
+                        if len(get_inventory(session.cookies["user_id"])) > 0:
+                            # stop the on_hold event
+                            cooldowns.items_on_hold_event.clear()
+                            break
+                    except FailedToLoadInventoryException:
+                        log(
+                            "Failed to load inventory while checking on-hold.",
+                            mycolors.WARNING,
+                        )
+                        logging.exception("Caught exception while getting my_inventory")
+
                     log(
                         "All items on hold, waiting 30 minutes, then refreshing...",
                         post_to_webhook=True,
@@ -578,7 +639,7 @@ def calculate_score(x):
 
 
 def pull_trade(session_id):
-    response = session.get("https://trades.roblox.com/v1/trades/%i" % session_id)
+    response = session.get("https://trades.roblox.com/v2/trades/%i" % session_id)
 
     data = json.loads(response.text)
 
@@ -637,33 +698,58 @@ def listen_for_inbound_trades():
             good_trades = []
 
             max_handle_value = int(settings["Trading"]["ignore_inbound_above_value"])
+            session_user_id = str(session.cookies.get("user_id"))
 
             for tradeInfo in inbound:
                 trade_data = pull_trade(tradeInfo["id"])
 
-                my_offer = None
-                their_offer = None
+                if (
+                    "participantAOffer" not in trade_data
+                    or "participantBOffer" not in trade_data
+                ):
+                    logging.warning(
+                        "trade_data missing participantAOffer or participantBOffer, skipping trade."
+                    )
+                    continue
 
-                for offer in trade_data["offers"]:
-                    if int(offer["user"]["id"]) == int(session.cookies["user_id"]):
-                        my_offer = copy.deepcopy(offer)
-                    else:
-                        their_offer = copy.deepcopy(offer)
+                participant_a_user_id = str(
+                    trade_data["participantAOffer"]["user"]["id"]
+                )
+                participant_b_user_id = str(
+                    trade_data["participantBOffer"]["user"]["id"]
+                )
 
-                assert my_offer is not None
-                assert their_offer is not None
+                if participant_a_user_id == session_user_id:
+                    my_offer = copy.deepcopy(trade_data["participantAOffer"])
+                    their_offer = copy.deepcopy(trade_data["participantBOffer"])
+                elif participant_b_user_id == session_user_id:
+                    my_offer = copy.deepcopy(trade_data["participantBOffer"])
+                    their_offer = copy.deepcopy(trade_data["participantAOffer"])
+                else:
+                    log(
+                        "couldn't find my user_id in trade information for inbound trade. check logs for details...",
+                        mycolors.WARNING,
+                    )
+                    logging.warning(f"no self_user id in {trade_data}")
+                    continue
 
-                my_items = [
-                    info
-                    for item in my_offer["userAssets"]
-                    if (info := add_extra_info(item)) is not None
-                ]
+                try:
+                    my_items = [
+                        info
+                        for item in my_offer["items"]
+                        if (info := add_extra_info(item)) is not None
+                    ]
 
-                their_items = [
-                    info
-                    for item in their_offer["userAssets"]
-                    if (info := add_extra_info(item)) is not None
-                ]
+                    their_items = [
+                        info
+                        for item in their_offer["items"]
+                        if (info := add_extra_info(item)) is not None
+                    ]
+                except Exception as e:
+                    log(f"failed to add item data to inbound trade: {e}", mycolors.FAIL)
+                    logging.exception(e)
+
+                    continue
 
                 my_items_original = copy.deepcopy(my_items)
                 their_items_original = copy.deepcopy(their_items)
@@ -988,7 +1074,8 @@ def update_score_threshold():
             except ZeroDivisionError:
                 return
 
-        clamp = lambda x: max(x, 0.001)
+        def clamp(x):
+            return max(x, 0.001)
 
         try:
             percent_diff = abs(
@@ -1073,24 +1160,49 @@ tradeSendQueueRunnerThread = threading.Thread(target=trade_send_queue_runner)
 tradeSendQueueRunnerThread.daemon = True
 tradeSendQueueRunnerThread.start()
 
+can_trade_throttle = False
+can_trade_timestamp = 0
+can_trade_backoff = 30
+
 
 def search_for_trades(user_id, guarantee_trade=False):
     log("Searching for trades with %i..." % user_id)
+    # Dont scan the same person..
+    cooldowns.add_cooldown(user_id)
 
     # If precheck is set to false in the lines following, then we will not look for trades with this user.
     precheck = True
 
-    # Check if we are allowed to trade with the user
-    response = session.get(
-        "https://trades.roblox.com/v1/users/%i/can-trade-with" % user_id
-    )
-    # Sometimes Roblox will throttle this,
-    # so in that case just don't bother with checking if we can trade with the user.
-    if response.status_code == 200:
-        data = json.loads(response.text)
-        can_trade_with = data["canTrade"]
-        if not can_trade_with:
-            precheck = False
+    # TODO: Use more APIs to check if can_trade
+    #
+    # Add ratelimit throttle to prevent spamming this API
+    global can_trade_throttle, can_trade_timestamp, can_trade_backoff
+    if can_trade_throttle and time.time() - can_trade_timestamp < can_trade_backoff:
+        # Still throttled, skip the request and assume we can trade
+        pass
+    else:
+        if can_trade_throttle:
+            # 30 seconds have passed, reset throttle
+            can_trade_throttle = False
+            can_trade_backoff = 30
+
+        response = session.get(
+            "https://trades.roblox.com/v1/users/%i/can-trade-with" % user_id
+        )
+
+        if response.status_code == 200:
+            data = json.loads(response.text)
+            can_trade_with = data["canTrade"]
+            if not can_trade_with:
+                precheck = False
+
+        elif response.status_code == 429:
+            can_trade_throttle = True
+            can_trade_timestamp = time.time()
+            can_trade_backoff = min(can_trade_backoff * 2, 180)
+            log(
+                f"can-trade-with throttled, backing off for {can_trade_backoff} seconds"
+            )
 
     # Check that the user is not a Roblox administrator
     is_admin = False
@@ -1108,7 +1220,7 @@ def search_for_trades(user_id, guarantee_trade=False):
                 is_admin = True
                 precheck = False
 
-    if not precheck:
+    if precheck is False:
         if is_admin:
             # log("Skipping user because they're admin.")
             # Block the user
@@ -1118,12 +1230,24 @@ def search_for_trades(user_id, guarantee_trade=False):
             pass
         return
 
-    my_inventory = get_inventory(session.cookies["user_id"])
-
+    try:
+        my_inventory = get_inventory(session.cookies["user_id"])
+    except FailedToLoadInventoryException:
+        log("Failed to load own inventory.", mycolors.FAIL)
+        # Avoid Inventory throttle
+        time.sleep(10)
+        logging.exception("Caught exception while getting my_inventory")
+        return
     try:
         their_inventory = get_inventory(user_id)
     except FailedToLoadInventoryException:
-        logging.warning("Skipping user...")
+        log(
+            f"Skipping getting inventory for user {user_id}...",
+            mycolors.WARNING,
+        )
+        # Avoid Inventory throttle
+        time.sleep(10)
+        logging.exception("Caught exception while getting their inventory")
         return
 
     def highest_value_affordable(inventory, upper_limit_multiplier):
@@ -1199,9 +1323,13 @@ def search_for_trades(user_id, guarantee_trade=False):
 
     if len(my_inventory) == 0:
         log(
-            "There are no tradable items or they have all been filtered out.",
-            mycolors.WARNING,
+            "You dont have enough tradable items or they have all been filtered out by maximum_xv1, retrying in 30 minutes...",
+            mycolors.FAIL,
         )
+        cooldowns.items_on_hold_event.set()
+        time.sleep(1800)
+        cooldowns.items_on_hold_event.clear()
+
         return
 
     try:
@@ -1240,9 +1368,9 @@ def search_for_trades(user_id, guarantee_trade=False):
                 yield x, y
 
     my_combos = combos(len(my_inventory), int(settings["Trading"]["maximum_xv1"]))
-    their_combos_wrapper = lambda: combos(
-        len(their_inventory), int(settings["Trading"]["maximum_1vx"])
-    )
+
+    def their_combos_wrapper():
+        return combos(len(their_inventory), int(settings["Trading"]["maximum_1vx"]))
 
     combinations = prod(my_combos, their_combos_wrapper)
 

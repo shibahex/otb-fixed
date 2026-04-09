@@ -69,8 +69,7 @@ def infinite_loop_proxies():
             yield proxy
 
 
-switch_proxy_every_minutes = int(
-    settings["General"]["switch_proxy_every_minutes"])
+switch_proxy_every_minutes = int(settings["General"]["switch_proxy_every_minutes"])
 
 
 def test_proxy():
