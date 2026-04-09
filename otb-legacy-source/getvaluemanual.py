@@ -20,8 +20,12 @@ def calculate_volume(value, volume):
 # NOTE: generate value takes more than just ID now.
 while True:
     theId = input("Enter ID: ")
+    item_payload = {
+        "itemId": int(theId),
+        "name": str(theId)
+    }
 
-    item = valuemanager.generate_value(int(theId))
+    item = valuemanager.generate_value(item_payload)
     try:
         item["ModifiedVolume"] = calculate_volume(item["value"], item["volume"])
     except ZeroDivisionError:
